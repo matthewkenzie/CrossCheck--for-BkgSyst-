@@ -14,6 +14,7 @@
 #include "TROOT.h"
 #include "TCanvas.h"
 #include "TStyle.h"
+#include "TLegend.h"
 
 #include "Rtypes.h"
 
@@ -38,16 +39,89 @@
 #include "RooNLLVar.h"
 #include "RooCategory.h"
 #include "RooSimultaneous.h"
+#include "RooBernstein.h"
+#include "RooChebychev.h"
 
 using namespace std;
 using namespace RooFit;
 
+const int nFuncs=3;
+string funcNames[nFuncs] = {"2pol","3pol","4pol"};
+
+void checkFunc(string name){
+  if (name!="2pol" && name!="3pol" && name!="4pol") {
+    cout << "Invalid function: " << name << endl;
+    cout << "Options are: " << endl;
+    for (int f=0; f<nFuncs; f++){
+      cout << "   " << funcNames[f].c_str() << endl;
+    }
+    exit(1);
+  }
+}
+
+const int getPar(string name){
+  if (name=="2pol") return 2;
+  else if (name=="3pol") return 3;
+  else if (name=="4pol") return 4;
+  else if (name=="5pol") return 5;
+  else exit(1);
+}
+
 int main(int argc, char* argv[]){
 
-  const int nToys=atoi(argv[1]);
-  const int toyStep=atoi(argv[2]);
+  bool help=false;
+  bool verbose=false;
+  bool doBkgInt=false;
+  bool plotGen=false;
+  bool saveDataFit=false;
+  int nToys;
+  int toyStep;
+  string genName;
+  string fitName;
 
-//  RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+  for (int arg=0; arg<argc; arg++) {
+    if (string(argv[arg])=="-h" || string(argv[arg])=="--help") help=true;
+    if (string(argv[arg])=="-v") verbose=true;
+    if (string(argv[arg])=="-bkg") doBkgInt=true;
+    if (string(argv[arg])=="-pG") plotGen=true;
+    if (string(argv[arg])=="-sDF") saveDataFit=true;
+    if (string(argv[arg])=="-gen") genName=string(argv[arg+1]);
+    if (string(argv[arg])=="-fit") fitName=string(argv[arg+1]);
+    if (string(argv[arg])=="-t") nToys=atoi(argv[arg+1]);
+    if (string(argv[arg])=="-p") toyStep=atoi(argv[arg+1]);
+  }
+  if (!help){
+    checkFunc(genName);
+    checkFunc(fitName);
+  }
+  if (argc<9 || help){
+    cout << "--- Run with following options: ---" << endl;
+    cout << "    -t    nToys " << endl;
+    cout << "    -p    plotStep " << endl;
+    cout << "    -gen  $i to gen with func $i " << endl;
+    cout << "    -fit  $i to fit with func $i " << endl;
+    cout << "--- Additional options: ---" << endl;
+    cout << "    -v for diagnostics " << endl;
+    cout << "    -bkg to do bkg int " << endl;
+    cout << "    -pG to plot gen func " << endl;
+    cout << "    -sDF to save data fit " << endl;
+    exit(1);
+  }
+
+  const int nGenPar=getPar(genName);
+  const int nFitPar=getPar(fitName);
+  
+  cout << "--- Running with following options ---" << endl;
+  cout << "    nToys:            " << nToys << endl;
+  cout << "    plotStep:         " << toyStep << endl;
+  cout << "    genFunction:      " << genName << endl;
+  cout << "    fitFunction:      " << fitName << endl;
+  if (verbose)     cout << "    print fit results on " << endl;
+  if (doBkgInt)    cout << "    bkg integral on " << endl;
+  if (plotGen)     cout << "    plot gen function on " << endl;
+  if (saveDataFit) cout << "    save data fit on " << endl;
+
+  if (!verbose) RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
   gROOT->SetStyle("Plain");
   gROOT->ForceStyle();
   
@@ -57,17 +131,23 @@ int main(int argc, char* argv[]){
   // get workspace and mass data
   RooWorkspace *dataWS = (RooWorkspace*)inFile->Get("cms_hgg_workspace");
   RooRealVar *mass = (RooRealVar*)dataWS->var("CMS_hgg_mass");
-  mass->setBins(240,"fineBins");
+  mass->setBins(120);
 
-  TFile *outFile = new TFile("biasCheck.root","RECREATE");
+  system("mkdir FitResults");
+  system("mkdir rm -r plots");
+  system("mkdir -p plots/toys");
+  system("mkdir -p plots/data");
+  system("mkdir -p plots/histos");
   
-  system("mkdir plots");
+  // --- declare variables for this code -----
   const int nCats=4;
   const int nMasses=8;
+  double polStart[5][nCats];
+  double expStart[5][nCats];
   RooDataSet *data[nCats];
-  RooRealVar *pol[6][nCats];
-  RooGenericPdf *genFcn[nCats];
-  RooGenericPdf *fitFcn[nCats];
+  RooRealVar *pol[10][nCats];
+  RooAbsPdf *genFcn[nCats];
+  RooAbsPdf *fitFcn[nCats];
   double sigSMEvents[nMasses][nCats];
   RooRealVar *mu = new RooRealVar("mu","mu",0.,-10,10);
   RooHistPdf *sigMCPdf[nMasses][nCats];
@@ -77,64 +157,98 @@ int main(int argc, char* argv[]){
 
   TH1F *bias[nMasses][nCats];
   TH1F *muHist[nMasses];
+
+  TFile *outFile = new TFile(Form("FitResults/biasCheck_g%s_f%s.root",genName.c_str(),fitName.c_str()),"RECREATE");
+  TFile *dataFitFile;
+  if (saveDataFit) dataFitFile = new TFile("FitResults/fitsTodata.root","UPDATE");
+  // --- get starting fit parameters
+  else dataFitFile = new TFile("FitResults/fitsTodata.root");
+  for (int cat=0; cat<nCats; cat++){
+    for (int par=0; par<nFitPar; par++){
+      RooRealVar *r = (RooRealVar*)((RooFitResult*)dataFitFile->Get(Form("fitRes_%s_toData_cat%d",fitName.c_str(),cat)))->floatParsFinal().find(Form("pol_p%d_cat%d",par,cat));
+      polStart[par][cat] = r->getVal();
+      cout << setw(12) << r->GetName() << " " << setw(12) << r->getVal() << endl;
+    }
+  }
+  
   int mIt=0;
   for (int mMC=110; mMC<=150; mMC+=5){
     if (mMC==145) continue;
-    muHist[mIt] = new TH1F(Form("muHist_m%d",mMC),Form("muHist_m%d",mMC),100,-10,10);
-    for (int cat=0; cat<nCats; cat++) bias[mIt][cat] = new TH1F(Form("b_m%d_c%d",mMC,cat),Form("b_m%d_c%d",mMC,cat),100,-100,100);
+    muHist[mIt] = new TH1F(Form("muHist_g%s_f%s_m%d",genName.c_str(),fitName.c_str(),mMC),Form("muHist_g%s_f%s_m%d",genName.c_str(),fitName.c_str(),mMC),100,-10,10);
+    if (doBkgInt) for (int cat=0; cat<nCats; cat++) bias[mIt][cat] = new TH1F(Form("b_g%s_f%s_m%d_c%d",genName.c_str(),fitName.c_str(),mMC,cat),Form("b_g%s_f%s_m%d_c%d",genName.c_str(),fitName.c_str(),mMC,cat),100,-100,100);
     mIt++;
   }
-  double toData[nCats];
+  double toData[nMasses][nCats];
 
   // ------ declare fit variables ------------
   cout << "Declaring variables for fit" << endl;
   for (int cat=0; cat<nCats; cat++){
-    pol[0][cat] = new RooRealVar(Form("pol_p0_cat%d",cat),Form("pol_p0_cat%d",cat),-10.,10.); 
-    pol[1][cat] = new RooRealVar(Form("pol_p1_cat%d",cat),Form("pol_p1_cat%d",cat),-10.,10.); 
-    pol[2][cat] = new RooRealVar(Form("pol_p2_cat%d",cat),Form("pol_p2_cat%d",cat),-10.,10.); 
-    genFcn[cat] = new RooGenericPdf(Form("3pol_cat%d",cat),Form("3pol_cat%d",cat),"(@1*@0)+(@2*pow(@0,2.0))+(@3*pow(@0,3.0))",RooArgSet(*mass,*pol[0][cat],*pol[1][cat],*pol[2][cat]));
-    pol[3][cat] = new RooRealVar(Form("polF_p3_cat%d",cat),Form("polF_p3_cat%d",cat),2.,-10.,10.); 
-    pol[4][cat] = new RooRealVar(Form("polF_p4_cat%d",cat),Form("polF_p4_cat%d",cat),0.25,-10.,10.); 
-    pol[5][cat] = new RooRealVar(Form("polF_p5_cat%d",cat),Form("polF_p5_cat%d",cat),0.01,-10.,10.); 
-    fitFcn[cat] = new RooGenericPdf(Form("3polF_cat%d",cat),Form("3polF_cat%d",cat),"(@1*@0)+(@2*pow(@0,2.0))+(@3*pow(@0,3.0))",RooArgSet(*mass,*pol[3][cat],*pol[4][cat],*pol[5][cat]));
+    // --- 4 params for initial fit to data ---
+    for (int par=0; par<nGenPar; par++) pol[par][cat] = new RooRealVar(Form("pol_p%d_cat%d",par,cat),Form("pol_p%d_cat%d",par,cat),0.6,-1.,1.); 
+    if (genName=="2pol") genFcn[cat] = new RooChebychev(Form("2pol_cat%d",cat),Form("2pol_cat%d",cat),*mass,RooArgList(*pol[0][cat],*pol[1][cat]));
+    if (genName=="3pol") genFcn[cat] = new RooChebychev(Form("3pol_cat%d",cat),Form("3pol_cat%d",cat),*mass,RooArgList(*pol[0][cat],*pol[1][cat],*pol[2][cat]));
+    if (genName=="4pol") genFcn[cat] = new RooChebychev(Form("4pol_cat%d",cat),Form("4pol_cat%d",cat),*mass,RooArgList(*pol[0][cat],*pol[1][cat],*pol[2][cat],*pol[3][cat]));
+    if (genName=="5pol") genFcn[cat] = new RooChebychev(Form("5pol_cat%d",cat),Form("5pol_cat%d",cat),*mass,RooArgList(*pol[0][cat],*pol[1][cat],*pol[2][cat],*pol[3][cat],*pol[4][cat]));
+
+    // --- 4 params for fit to gen data ---
+    for (int par=5; par<5+nFitPar; par++) pol[par][cat] = new RooRealVar(Form("polF_p%d_cat%d",par,cat),Form("polF_p%d_cat%d",par,cat),0.6,-1.,1.); 
+    if (fitName=="2pol") fitFcn[cat] = new RooChebychev(Form("2polF_cat%d",cat),Form("2polF_cat%d",cat),*mass,RooArgList(*pol[5][cat],*pol[6][cat]));
+    if (fitName=="3pol") fitFcn[cat] = new RooChebychev(Form("3polF_cat%d",cat),Form("3polF_cat%d",cat),*mass,RooArgList(*pol[5][cat],*pol[6][cat],*pol[7][cat]));
+    if (fitName=="4pol") fitFcn[cat] = new RooChebychev(Form("4polF_cat%d",cat),Form("4polF_cat%d",cat),*mass,RooArgList(*pol[5][cat],*pol[6][cat],*pol[7][cat],*pol[8][cat]));
+    if (fitName=="5pol") fitFcn[cat] = new RooChebychev(Form("5polF_cat%d",cat),Form("5polF_cat%d",cat),*mass,RooArgList(*pol[5][cat],*pol[6][cat],*pol[7][cat],*pol[8][cat],*pol[9][cat]));
+    
+    
   // ----- fit to data in each category ----- 
-    pol[0][cat]->setVal(0.5);
-    pol[1][cat]->setVal(0.5);
-    pol[2][cat]->setVal(0.5);
+    
     data[cat] = (RooDataSet*)dataWS->data(Form("data_mass_cat%d",cat));
-    RooFitResult *datFit = genFcn[cat]->fitTo(*data[cat],Save());//,PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
+    RooFitResult *datFit;
+    if (verbose) datFit = genFcn[cat]->fitTo(*data[cat],Save());
+    else datFit = genFcn[cat]->fitTo(*data[cat],Save(),PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
     datFit->floatParsFinal().Print("s");
-  // ----- calc integral around mass ---------------
-    RooRealVar intRange(*mass);
-    intRange.setRange("sigWindow",120,130);
-    RooAbsReal *onData = genFcn[cat]->createIntegral(*mass,NormSet(*mass),Range("sigWindow"));
-    toData[cat] = onData->getVal()*data[cat]->numEntries();
+    datFit->SetName(Form("fitRes_%s_toData_cat%d",genName.c_str(),cat));
+    if (saveDataFit){
+      dataFitFile->cd();
+      datFit->Write();
+    }
+    outFile->cd();
+    datFit->Write();
   // ----- draw fit to data ---------------
     TCanvas *c = new TCanvas();
-    RooPlot *tFrame = mass->frame(Title(Form("2pol fit to data %d",cat)));
+    RooPlot *tFrame = mass->frame(Title(Form("%s fit to data cat%d",genName.c_str(),cat)));
     data[cat]->plotOn(tFrame,DataError(RooDataSet::SumW2));
     genFcn[cat]->plotOn(tFrame);
     tFrame->Draw();
-    c->Print(Form("plots/fitTodat_cat%d.png",cat),"png");
+    c->Print(Form("plots/data/fitTodat_%s_cat%d.png",genName.c_str(),cat),"png");
     delete c;
   
   // ---- Get mass distributions  and entries ------
+    RooRealVar intRange(*mass);
     mIt=0;
+    cout << "--- Event check: ----- " << endl;
     for (int mMC=110; mMC<=150; mMC+=5){
       if (mMC==145) continue;
+      double mLow = mMC-5.;
+      double mHigh = mMC+5.;
+      intRange.setRange("sigWindow",mLow,mHigh);
+    // ----- calc integral around mass ---------------
+      if (doBkgInt){
+        RooAbsReal *onData = genFcn[cat]->createIntegral(*mass,NormSet(*mass),Range("sigWindow"));
+        toData[mMC][cat] = onData->getVal()*data[cat]->numEntries();
+      }
+    // get signal data
       RooDataSet *sigData = (RooDataSet*)dataWS->data(Form("sig_ggh_mass_m%d_cat%d",mMC,cat));
       sigData->append(*((RooDataSet*)dataWS->data(Form("sig_vbf_mass_m%d_cat%d",mMC,cat))));
       sigData->append(*((RooDataSet*)dataWS->data(Form("sig_wzh_mass_m%d_cat%d",mMC,cat))));
       sigData->append(*((RooDataSet*)dataWS->data(Form("sig_tth_mass_m%d_cat%d",mMC,cat))));
+    // get expected SM events
       sigSMEvents[mIt][cat] = (((TH1F*)inFile->Get(Form("th1f_sig_ggh_mass_m%d_cat%d",mMC,cat)))->Integral())+((TH1F*)inFile->Get(Form("th1f_sig_vbf_mass_m%d_cat%d",mMC,cat)))->Integral()+((TH1F*)inFile->Get(Form("th1f_sig_wzh_mass_m%d_cat%d",mMC,cat)))->Integral()+((TH1F*)inFile->Get(Form("th1f_sig_tth_mass_m%d_cat%d",mMC,cat)))->Integral();
-      cout << "--- Event check: ----- " << endl;
-      cout << "Mass: " << mMC << " cat: " << cat << " intSM: " << sigSMEvents[mIt][cat] << endl;
+      cout << "   Mass: " << mMC << " cat: " << cat << " intSM: " << sigSMEvents[mIt][cat] << endl;
+    // construct s+b model
       RooDataHist *sigMC = new RooDataHist(Form("sigMC_m%d_cat%d",mMC,cat),Form("sigMC_m%d_cat%d",mMC,cat),*mass,*sigData);
       sigMCPdf[mIt][cat] = new RooHistPdf(Form("sigMCPdf_m%d_cat%d",mMC,cat),Form("sigMC_m%d_cat%d",mMC,cat),*mass,*sigMC);
    // ----- def s and b yields and construct s+b model
       bkgYield[mIt][cat] = new RooRealVar(Form("bkgYield_m%d_cat%d",mMC,cat),Form("bkgYield_m%d_cat%d",mMC,cat),5000,3000,8000);
       sigYield[mIt][cat] = new RooFormulaVar(Form("sigYield_m%d_cat%d",mMC,cat),Form("sigYield_m%d_cat%d",mMC,cat),"@0*@1",RooArgList(RooConst(sigSMEvents[mIt][cat]),*mu));
-      //RooRealVar *sigYield = new RooRealVar(Form("sigYield_m%d_cat%d",mMC,cat),Form("sigYield_m%d_cat%d",mMC,cat),0,-35,35);
       sigAndBkg[mIt][cat] = new RooAddPdf(Form("SandB_m%d_cat%d",mMC,cat),Form("SandB_m%d_cat%d",mMC,cat),RooArgList(*fitFcn[cat],*sigMCPdf[mIt][cat]),RooArgList(*bkgYield[mIt][cat],*sigYield[mIt][cat]));
       mIt++;
     }
@@ -142,18 +256,18 @@ int main(int argc, char* argv[]){
   cout << "------------------------------------------------" << endl;
   cout << "--- Data fitted. Mass distributions obtained ---" << endl;
   cout << "------------------------------------------------" << endl;
+  cout << "-------- Generating and fitting toys -----------" << endl;
 
   RooDataSet *genDat[nCats];
 
   for (int itToy=0; itToy<nToys; itToy++){
-    cout << "----------------------------------------" << endl;
-    cout << "------------- TOY: " << itToy << "------" << endl;
-    cout << "----------------------------------------" << endl;
+    cout << "----------------------------------------------" << endl;
+    cout << "------------- TOY: " << itToy << "------------" << endl;
+    cout << "----------------------------------------------" << endl;
     for (int cat=0; cat<nCats; cat++){
       genDat[cat] = genFcn[cat]->generate(*mass,data[cat]->numEntries(),Extended());
-      pol[3][cat]->setVal(pol[0][cat]->getVal());
-      pol[4][cat]->setVal(pol[1][cat]->getVal());
-      pol[5][cat]->setVal(pol[2][cat]->getVal());
+      // --- set starting to vals to that of gen
+      for (int par=0; par<nFitPar; par++) pol[par+5][cat]->setVal(polStart[par][cat]);
       for (int mIt=0; mIt<nMasses; mIt++) bkgYield[mIt][cat]->setVal(5000);
       mu->setVal(0.);
     }
@@ -175,31 +289,56 @@ int main(int argc, char* argv[]){
       simPdf.addPdf(*sigAndBkg[mIt][2],"cat2");
       simPdf.addPdf(*sigAndBkg[mIt][3],"cat3");
       // ---- fit and save output -----
-      RooFitResult *res = simPdf.fitTo(combData,Save(true));//,PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
+      RooFitResult *res;
+      if (verbose) res = simPdf.fitTo(combData,Save(true));
+      else res = simPdf.fitTo(combData,Save(true),PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
       res->floatParsFinal().Print("s");
+      outFile->cd();
+      res->SetName(Form("fitRes_g%s_f%s_m%d_t%d",genName.c_str(),fitName.c_str(),mMC,itToy));
+      res->Write();
       muHist[mIt]->Fill(mu->getVal()); 
       // --- find bkg integral -----
       for (int cat=0; cat<nCats; cat++){
-        RooAbsReal *intInRange = fitFcn[cat]->createIntegral(*mass,NormSet(*mass),Range("sigWindow"));
-        double toBkg = intInRange->getVal()*genDat[cat]->numEntries();
-        bias[mIt][cat]->Fill(toData[cat]-toBkg);
+        if (doBkgInt){
+          RooAbsReal *intInRange = fitFcn[cat]->createIntegral(*mass,NormSet(*mass),Range("sigWindow"));
+          double toBkg = intInRange->getVal()*genDat[cat]->numEntries();
+          bias[mIt][cat]->Fill(toData[mIt][cat]-toBkg);
+        }
       // ---- make plots ----
         if (itToy%toyStep==0){
           TCanvas *c1 = new TCanvas();
-          RooPlot *mFrame = mass->frame(Title(Form("3pol fit to data %d toy%d",cat,itToy)));
+          TLegend *leg = new TLegend(0.65,0.65,0.89,0.89);
+          leg->SetLineColor(0);
+          leg->SetFillColor(0);
+          RooPlot *mFrame = mass->frame(Title(Form("Gen: %s. Fit: %s. Mass %d cat %d toy %d",genName.c_str(),fitName.c_str(),mMC,cat,itToy)));
           genDat[cat]->plotOn(mFrame,DataError(RooDataSet::SumW2));
+          if (plotGen) genFcn[cat]->plotOn(mFrame,LineColor(kMagenta));
           fitFcn[cat]->plotOn(mFrame,LineColor(kRed),LineStyle(kDashed));
           sigAndBkg[mIt][cat]->plotOn(mFrame);
+          mFrame->SetXTitle("M_{#gamma#gamma} (GeV/c^{2})");
           mFrame->Draw();
-          c1->Print(Form("plots/fitTogen_m%d_cat%d_toy%d.png",mMC,cat,itToy),"png");
+      // ---- make legend -----
+          TH1F *h = new TH1F("h","h",1,0,1);
+          h->SetLineColor(kMagenta);
+          h->SetLineWidth(3);
+          TH1F *h1 = new TH1F("h1","h2",1,0,1);
+          h1->SetLineColor(kBlue);
+          h1->SetLineWidth(3);
+          TH1F *h2 = new TH1F("h2","h2",1,0,1);
+          h2->SetLineColor(kRed);
+          h2->SetLineStyle(kDashed);
+          h2->SetLineWidth(3);
+          if (plotGen) leg->AddEntry(h,"Truth","l");
+          leg->AddEntry(h2,"bkg after fit","l");
+          leg->AddEntry(h1,"s+b after fit","l");
+          leg->Draw("same");
+          c1->Print(Form("plots/toys/fitTogen_g%s_f%s_m%d_cat%d_toy%d.png",genName.c_str(),fitName.c_str(),mMC,cat,itToy),"png");
           delete c1;
         }
-        
-        pol[3][cat]->setVal(pol[0][cat]->getVal());
-        pol[4][cat]->setVal(pol[1][cat]->getVal());
-        pol[5][cat]->setVal(pol[2][cat]->getVal());
-        bkgYield[mIt][cat]->setVal(5000);
-        mu->setVal(0);
+        // --- set starting to vals to that of gen
+        for (int par=0; par<nFitPar; par++) pol[par+5][cat]->setVal(polStart[par][cat]);
+        for (int mIt=0; mIt<nMasses; mIt++) bkgYield[mIt][cat]->setVal(5000);
+        mu->setVal(0.);
       }
       mIt++;
     }
@@ -212,51 +351,18 @@ int main(int argc, char* argv[]){
     muHist[mIt]->Write();
     TCanvas *canv = new TCanvas();
     muHist[mIt]->Draw();
-    canv->Print(Form("plots/mu_m%d.png",mMC),"png");
-    for (int cat=0; cat<nCats; cat++){
-      bias[mIt][cat]->Write();
-      bias[mIt][cat]->Draw();
-      canv->Print(Form("plots/biasCheck_m%d_cat%d.png",mMC,cat),"png");
-      canv->Clear();
+    canv->Print(Form("plots/histos/mu_g%s_f%s_m%d.png",genName.c_str(),fitName.c_str(),mMC),"png");
+    if (doBkgInt){
+      for (int cat=0; cat<nCats; cat++){
+        bias[mIt][cat]->Write();
+        bias[mIt][cat]->Draw();
+        canv->Print(Form("plots/histos/biasCheck_g%s_f%s_m%d_cat%d.png",genName.c_str(),fitName.c_str(),mMC,cat),"png");
+        canv->Clear();
+      }
     }
     mIt++;
   }
 
-    /*
-    for (int cat=0; cat<nCats; cat++){
-      RooAbsReal *intInRange = fitFcn[cat]->createIntegral(*mass,NormSet(*mass),Range("sigWindow"));
-      double toBkg = intInRange->getVal()*genDat[cat]->numEntries();
-      bias[cat]->Fill(toData[cat]-toBkg);
-      //if (itToy%20==0){
-        TCanvas *c1 = new TCanvas();
-        RooPlot *mFrame = mass->frame(Title(Form("3pol fit to data %d toy%d",cat,itToy)));
-        genDat[cat]->plotOn(mFrame,DataError(RooDataSet::SumW2));
-        fitFcn[cat]->plotOn(mFrame,LineColor(kRed),LineStyle(kDashed));
-        sigAndBkg[cat]->plotOn(mFrame);
-        mFrame->Draw();
-        c1->Print(Form("plots/fitTodat_cat%d_toy%d.png",cat,itToy),"png");
-        delete c1;
-    //  }
-      
-      pol[3][cat]->setVal(2.);
-      pol[4][cat]->setVal(0.25);
-      pol[5][cat]->setVal(0.01);
-      bkgYield[cat]->setVal(5000);
-    }
-    mu->setVal(0);
-  }
-  muHist->Write();
-  TCanvas *canv = new TCanvas();
-  muHist->Draw();
-  canv->Print(Form("plots/mu.png","png"));
-  canv->Clear();
-  for (int cat=0; cat<nCats; cat++){
-    bias[cat]->Write();
-    bias[cat]->Draw();
-    canv->Print(Form("plots/biasCheck_cat%d.png",cat),"png");
-    canv->Clear();
-  }
-  */
   inFile->Close();
   outFile->Close();
 
