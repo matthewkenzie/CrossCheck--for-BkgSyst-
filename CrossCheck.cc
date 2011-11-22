@@ -45,11 +45,11 @@
 using namespace std;
 using namespace RooFit;
 
-const int nFuncs=6;
-string funcNames[nFuncs] = {"2pol","3pol","4pol","1exp","2exp","3exp"};
+const int nFuncs=12;
+string funcNames[nFuncs] = {"2pol","3pol","4pol","1exp","2exp","3exp","1pow","2pow","3pow","2lau","4lau","6lau"};
 
 void checkFunc(string name){
-  if (name!="2pol" && name!="3pol" && name!="4pol" && name!="1exp" && name!="2exp" && name!="3exp") {
+  if (name!="2pol" && name!="3pol" && name!="4pol" && name!="1exp" && name!="2exp" && name!="3exp" && name!="1pow" && name!="2pow" && name!="3pow" && name!="2lau" && name!="4lau" && name!="6lau") {
     cout << "Invalid function: " << name << endl;
     cout << "Options are: " << endl;
     for (int f=0; f<nFuncs; f++){
@@ -60,17 +60,19 @@ void checkFunc(string name){
 }
 
 const int getPar(string name){
-  if (name=="1exp") return 1;
+  if (name=="1exp" || name=="1pow" || name=="2lau") return 1;
   else if (name=="2pol") return 2;
-  else if (name=="3pol" || name=="2exp") return 3;
+  else if (name=="3pol" || name=="2exp" || name=="2pow" || name=="4lau") return 3;
   else if (name=="4pol") return 4;
-  else if (name=="5pol" || name=="3exp") return 5;
+  else if (name=="5pol" || name=="3exp" || name=="3pow" || name=="6lau") return 5;
   else exit(1);
 }
 
 string getType(string name){
   if (name=="1exp" || name=="2exp" || name=="3exp") return "exp";
   else if (name=="2pol" || name=="3pol" || name=="4pol" || name=="5pol") return "pol";
+  else if (name=="1pow" || name=="2pow" || name=="3pow") return "pow";
+  else if (name=="2lau" || name=="4lau" || name=="6lau") return "lau";
   else exit(1);
 }
 
@@ -108,10 +110,10 @@ int main(int argc, char* argv[]){
     cout << "    -gen  $i to gen with func $i " << endl;
     cout << "    -fit  $i to fit with func $i " << endl;
     cout << "--- Additional options: ---" << endl;
-    cout << "    -v for diagnostics " << endl;
-    cout << "    -bkg to do bkg int " << endl;
-    cout << "    -pG to plot gen func " << endl;
-    cout << "    -sDF to save data fit " << endl;
+    cout << "    -v    for diagnostics " << endl;
+    cout << "    -bkg  to do bkg int " << endl;
+    cout << "    -pG   to plot gen func " << endl;
+    cout << "    -sDF  to save data fit " << endl;
     exit(1);
   }
 
@@ -183,9 +185,11 @@ int main(int argc, char* argv[]){
       for (int par=0; par<nFitPar; par++){
         RooRealVar *datFitRes = (RooRealVar*)((RooFitResult*)dataFitFile->Get(Form("fitRes_%s_toData_cat%d",fitName.c_str(),cat)))->floatParsFinal().find(Form("%s_p%d_cat%d",fitType.c_str(),par,cat));
         startPar[par][cat] = datFitRes->getVal();
+        cout << startPar[par][cat] << endl;
       }
     }
   }
+  
   int mIt=0;
   for (int mMC=110; mMC<=150; mMC+=5){
     if (mMC==145) continue;
@@ -220,6 +224,21 @@ int main(int argc, char* argv[]){
       if (genName=="2exp") genFcn[cat] = new RooAddPdf(Form("2exp_cat%d",cat),Form("2exp_cat%d",cat),RooArgList(*rooExp[0][cat],*rooExp[1][cat]),RooArgList(*genPars[1][cat]));
       if (genName=="3exp") genFcn[cat] = new RooAddPdf(Form("3exp_cat%d",cat),Form("3exp_cat%d",cat),RooArgList(*rooExp[0][cat],*rooExp[1][cat],*rooExp[2][cat]),RooArgList(*genPars[1][cat],*genPars[3][cat]));
     }
+    // --- power laws ---
+    if (genType=="pow"){
+      for (int par=0; par<nGenPar; par+=2) genPars[par][cat] = new RooRealVar(Form("pow_p%d_cat%d",par,cat),Form("pow_p%d_cat%d",par,cat),-1.,-5.,5.);
+      for (int par=1; par<nGenPar; par+=2) genPars[par][cat] = new RooRealVar(Form("pow_p%d_cat%d",par,cat),Form("pow_p%d_cat%d",par,cat),0.,0.,1.);
+      if (genName=="1pow") genFcn[cat] = new RooGenericPdf(Form("1pow_cat%d",cat),Form("1pow_cat%d",cat),"pow(@0,@1)",RooArgList(*mass,*genPars[0][cat]));
+      if (genName=="2pow") genFcn[cat] = new RooGenericPdf(Form("2pow_cat%d",cat),Form("2pow_cat%d",cat),"(1-@2)*pow(@0,@1)+@2*pow(@0,@3)",RooArgList(*mass,*genPars[0][cat],*genPars[1][cat],*genPars[2][cat]));
+      if (genName=="3pow") genFcn[cat] = new RooGenericPdf(Form("3pow_cat%d",cat),Form("3pow_cat%d",cat),"(1-@2-@4)*pow(@0,@1)+@2*pow(@0,@3)+@4*pow(@0,@5)",RooArgList(*mass,*genPars[0][cat],*genPars[1][cat],*genPars[2][cat],*genPars[3][cat],*genPars[4][cat]));
+    }
+    // --- laurent series ---
+    if (genType=="lau"){
+      for (int par=0; par<nGenPar; par++) genPars[par][cat] = new RooRealVar(Form("lau_p%d_cat%d",par,cat),Form("lau_p%d_cat%d",par,cat),0.5,0.,1.);
+      if (genName=="2lau") genFcn[cat] = new RooGenericPdf(Form("2lau_cat%d",cat),Form("2lau_cat%d",cat),"(1-@1)*pow(@0,-4.0)+@1*pow(@0,-5.0)",RooArgList(*mass,*genPars[0][cat]));
+      if (genName=="4lau") genFcn[cat] = new RooGenericPdf(Form("4lau_cat%d",cat),Form("4lau_cat%d",cat),"(1-@1-@2-@3)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)",RooArgList(*mass,*genPars[0][cat],*genPars[1][cat],*genPars[2][cat]));
+      if (genName=="6lau") genFcn[cat] = new RooGenericPdf(Form("6lau_cat%d",cat),Form("6lau_cat%d",cat),"(1-@1-@2-@3-@4-@5)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)+@4*pow(@0,-2.0)+@5*pow(@0,-7.0)",RooArgList(*mass,*genPars[0][cat],*genPars[1][cat],*genPars[2][cat],*genPars[3][cat],*genPars[4][cat]));
+    }
 
     // ------------------------------------------
     // --- params for fit to gen data ---
@@ -234,8 +253,8 @@ int main(int argc, char* argv[]){
     }
     // --- exponentials ---
     if (fitType=="exp"){
-      for (int par=0; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("exp_p%d_cat%d",par,cat),Form("exp_p%d_cat%d",par,cat),-0.1,-1.,0.);
-      for (int par=1; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("exp_p%d_cat%d",par,cat),Form("exp_p%d_cat%d",par,cat),0.1,0.,1.);
+      for (int par=0; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("expF_p%d_cat%d",par,cat),Form("expF_p%d_cat%d",par,cat),-0.1,-1.,0.);
+      for (int par=1; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("expF_p%d_cat%d",par,cat),Form("expF_p%d_cat%d",par,cat),0.1,0.,1.);
       if (nFitPar>0) rooExp[3][cat] = new RooExponential(Form("rooexpF3_cat%d",cat),Form("rooexpF3_cat%d",cat),*mass,*fitPars[0][cat]);
       if (nFitPar>2) rooExp[4][cat] = new RooExponential(Form("rooexpF4_cat%d",cat),Form("rooexpF4_cat%d",cat),*mass,*fitPars[2][cat]);
       if (nFitPar>4) rooExp[5][cat] = new RooExponential(Form("rooexpF5_cat%d",cat),Form("rooexpF5_cat%d",cat),*mass,*fitPars[4][cat]);
@@ -243,7 +262,21 @@ int main(int argc, char* argv[]){
       if (fitName=="2exp") fitFcn[cat] = new RooAddPdf(Form("2expF_cat%d",cat),Form("2expF_cat%d",cat),RooArgList(*rooExp[3][cat],*rooExp[4][cat]),RooArgList(*fitPars[1][cat]));
       if (fitName=="3exp") fitFcn[cat] = new RooAddPdf(Form("3expF_cat%d",cat),Form("3expF_cat%d",cat),RooArgList(*rooExp[3][cat],*rooExp[4][cat],*rooExp[5][cat]),RooArgList(*fitPars[1][cat],*fitPars[3][cat]));
     }
-    
+    // --- power laws ---
+    if (genType=="pow"){
+      for (int par=0; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("powF_p%d_cat%d",par,cat),Form("powF_p%d_cat%d",par,cat),-1.,-5.,5.);
+      for (int par=1; par<nFitPar; par+=2) fitPars[par][cat] = new RooRealVar(Form("powF_p%d_cat%d",par,cat),Form("powF_p%d_cat%d",par,cat),0.,0.,1.);
+      if (fitName=="1pow") fitFcn[cat] = new RooGenericPdf(Form("1powF_cat%d",cat),Form("1powF_cat%d",cat),"pow(@0,@1)",RooArgList(*mass,*fitPars[0][cat]));
+      if (fitName=="2pow") fitFcn[cat] = new RooGenericPdf(Form("2powF_cat%d",cat),Form("2powF_cat%d",cat),"(1-@2)*pow(@0,@1)+@2*pow(@0,@3)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat]));
+      if (fitName=="3pow") fitFcn[cat] = new RooGenericPdf(Form("3powF_cat%d",cat),Form("3powF_cat%d",cat),"(1-@2-@4)*pow(@0,@1)+@2*pow(@0,@3)+@4*pow(@0,@5)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat],*fitPars[3][cat],*fitPars[4][cat]));
+    }
+    // --- laurent series ---
+    if (fitType=="lau"){
+      for (int par=0; par<nFitPar; par++) fitPars[par][cat] = new RooRealVar(Form("lauF_p%d_cat%d",par,cat),Form("lauF_p%d_cat%d",par,cat),0.5,0.,1.);
+      if (fitName=="2lau") fitFcn[cat] = new RooGenericPdf(Form("2lauF_cat%d",cat),Form("2lauF_cat%d",cat),"(1-@1)*pow(@0,-4.0)+@1*pow(@0,-5.0)",RooArgList(*mass,*fitPars[0][cat]));
+      if (fitName=="4lau") fitFcn[cat] = new RooGenericPdf(Form("4lauF_cat%d",cat),Form("4lauF_cat%d",cat),"(1-@1-@2-@3)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat]));
+      if (fitName=="6lau") fitFcn[cat] = new RooGenericPdf(Form("6lauF_cat%d",cat),Form("6lauF_cat%d",cat),"(1-@1-@2-@3-@4-@5)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)+@4*pow(@0,-2.0)+@5*pow(@0,-7.0)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat],*fitPars[3][cat],*fitPars[4][cat]));
+    }
     
   // ----- fit to data in each category ----- 
     
