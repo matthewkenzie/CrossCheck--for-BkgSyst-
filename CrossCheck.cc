@@ -103,10 +103,10 @@ int main(int argc, char* argv[]){
     checkFunc(genName);
     checkFunc(fitName);
   }
-  if (argc<9 || help){
+  if ((!saveDataFit && argc<9) || (saveDataFit && arc<7) || help){
     cout << "--- Run with following options: ---" << endl;
-    cout << "    -t    nToys " << endl;
-    cout << "    -p    plotStep " << endl;
+    cout << "    -t    nToys (if -sDF off) " << endl;
+    cout << "    -p    plotStep (if -sDF off)" << endl;
     cout << "    -gen  $i to gen with func $i " << endl;
     cout << "    -fit  $i to fit with func $i " << endl;
     cout << "--- Additional options: ---" << endl;
@@ -336,6 +336,7 @@ int main(int argc, char* argv[]){
   cout << "------------------------------------------------" << endl;
   cout << "--- Data fitted. Mass distributions obtained ---" << endl;
   cout << "------------------------------------------------" << endl;
+  if (saveDataFit) exit(1);
   cout << "-------- Generating and fitting toys -----------" << endl;
 
   RooDataSet *genDat[nCats];
