@@ -86,6 +86,7 @@ int main(int argc, char* argv[]){
   bool doBkgInt=false;
   bool plotGen=false;
   bool saveDataFit=false;
+  bool wideRange=false;
   int nToys;
   int nJobs=1;
   int jobNumb=0;
@@ -105,6 +106,7 @@ int main(int argc, char* argv[]){
     if (string(argv[arg])=="-p") toyStep=atoi(argv[arg+1]);
     if (string(argv[arg])=="-nJ") nJobs=atoi(argv[arg+1]);
     if (string(argv[arg])=="-j") jobNumb=atoi(argv[arg+1]);
+    if (string(argv[arg])=="-wide") wideRange=true;
   }
   if (!help){
     checkFunc(genName);
@@ -123,6 +125,7 @@ int main(int argc, char* argv[]){
     cout << "    -bkg  to do bkg int " << endl;
     cout << "    -pG   to plot gen func " << endl;
     cout << "    -sDF  to save data fit " << endl;
+    cout << "    -wide to fit from 100-180 " << endl;
     exit(1);
   }
 
@@ -142,6 +145,7 @@ int main(int argc, char* argv[]){
   if (doBkgInt)    cout << "    bkg integral on " << endl;
   if (plotGen)     cout << "    plot gen function on " << endl;
   if (saveDataFit) cout << "    save data fit on " << endl;
+  if (wideRange)   cout << "    wide range fit on " << endl;
   if (saveDataFit && nToys>0){
     cout << " ERROR: CANNOT SAVE STARTING PARAMS AND FIT TOYS SIMULTANEOUSLY" << endl;
     cout << " --> either run without -sDF option or without -t or with -t 0 for no toys" << endl;
@@ -154,14 +158,22 @@ int main(int argc, char* argv[]){
   gROOT->SetStyle("Plain");
   gROOT->ForceStyle();
   
-  //TFile *inFile = new TFile("CMS-HGG_4686pb.root");
-  TFile *inFile = new TFile("CMS-HGG_4686pb_pol5_110_150_1.root");
+  TFile *inFile;
+  if (!wideRange) inFile = new TFile("CMS-HGG_4686pb.root");
+  else inFile = new TFile("CMS-HGG_4686pb_pol5_110_150_1.root");
   gROOT->SetStyle("Plain");
   gROOT->ForceStyle();
   // get workspace and mass data
   RooWorkspace *dataWS = (RooWorkspace*)inFile->Get("cms_hgg_workspace");
   RooRealVar *mass = (RooRealVar*)dataWS->var("CMS_hgg_mass");
-  mass->setBins(320);
+  if (wideRange) {
+    mass->setBins(320);
+    mass->setBins(80,"chi2binning");
+  }
+  else {
+    mass->setBins(240);
+    mass->setBins(60,"chi2binning");
+  }
 
   system("mkdir FitResults");
   //system("mkdir rm -r plots");
@@ -172,9 +184,10 @@ int main(int argc, char* argv[]){
   // --- declare variables for this code -----
   const int nCats=4;
   const int nMasses=8;
-  const int nWinds=1;
-  string winName[nWinds] = {"all"};//,"10"};
+  const int nWinds=2;
+  string winName[nWinds] = {"all","10"};
   double startPar[nFitPar][nCats];
+  double swStartPar[nMasses][nCats][nFitPar];
   RooDataSet *data[nCats];
   RooRealVar *genPars[5][nCats];
   RooRealVar *fitPars[5][nCats];
@@ -191,7 +204,7 @@ int main(int argc, char* argv[]){
   TH1F *bias[nMasses][nCats];
   TH1F *muHist[nWinds][nMasses];
 
-  TFile *outFile = new TFile(Form("NewResults/biasCheck_g%s_f%s_j%d.root",genName.c_str(),fitName.c_str(),jobNumb),"RECREATE");
+  TFile *outFile = new TFile(Form("SWResults/biasCheck_g%s_f%s_j%d.root",genName.c_str(),fitName.c_str(),jobNumb),"RECREATE");
   TFile *dataFitFile;
   if (saveDataFit) dataFitFile = new TFile("NewResults/fitsTodata.root","UPDATE");
   else {
@@ -294,10 +307,54 @@ int main(int argc, char* argv[]){
       if (fitName=="4lau") fitFcn[cat] = new RooGenericPdf(Form("4lauF_cat%d",cat),Form("4lauF_cat%d",cat),"(1-@1-@2-@3)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat]));
       if (fitName=="6lau") fitFcn[cat] = new RooGenericPdf(Form("6lauF_cat%d",cat),Form("6lauF_cat%d",cat),"(1-@1-@2-@3-@4-@5)*pow(@0,-4.0)+@1*pow(@0,-5.0)+@2*pow(@0,-3.0)+@3*pow(@0,-6.0)+@4*pow(@0,-2.0)+@5*pow(@0,-7.0)",RooArgList(*mass,*fitPars[0][cat],*fitPars[1][cat],*fitPars[2][cat],*fitPars[3][cat],*fitPars[4][cat]));
     }
-    
+  
+  // ---- get data in each category
+  data[cat] = (RooDataSet*)dataWS->data(Form("data_mass_cat%d",cat));
+  // ---- try and estimate starting pars for SW by fitting bkg only to data ----
+    for (int win=1; win<nWinds; win++){
+      mIt=0;
+      for (int mMC=110; mMC<=150; mMC+=5){
+        if (mMC==145) continue;
+        mass->setRange("testSW",mMC-10.,mMC+10.);
+        // --- get copy of bkg func ---
+        RooAbsPdf *tempFitFcn;
+        if (fitType=="pol") tempFitFcn = (RooChebychev*)fitFcn[cat]->Clone(Form("swFitToData_%s_w%s_m%d_c%d",fitName.c_str(),winName[win].c_str(),mMC,cat));
+        if (fitName=="1exp") tempFitFcn = (RooExponential*)fitFcn[cat]->Clone(Form("swFitToData_%s_w%s_m%d_c%d",fitName.c_str(),winName[win].c_str(),mMC,cat));
+        if (fitName=="2exp" || fitName=="3exp") tempFitFcn = (RooAddPdf*)fitFcn[cat]->Clone(Form("swFitToData_%s_w%s_m%d_c%d",fitName.c_str(),winName[win].c_str(),mMC,cat));
+        if (fitType=="pow" || fitType=="lau") tempFitFcn = (RooGenericPdf*)fitFcn[cat]->Clone(Form("swFitToData_%s_w%s_m%d_c%d",fitName.c_str(),winName[win].c_str(),mMC,cat));
+        
+        RooFitResult *swFit = tempFitFcn->fitTo(*data[cat],Range("testSW"),SumCoefRange("testSW"),Save(),PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
+        swFit->floatParsFinal().Print("s");
+        for (int par=0; par<nFitPar; par++) swStartPar[mIt][cat][par]=fitPars[par][cat]->getVal();
+        // ---- draw SW fit to data
+        TCanvas *c2 = new TCanvas();
+        RooPlot *swFrame = mass->frame(Title(Form("%s fit to data sw%s m%d cat%d",fitName.c_str(),winName[win].c_str(),mMC,cat)));
+        data[cat]->plotOn(swFrame,DataError(RooDataSet::SumW2),Binning("chi2binning"));
+        tempFitFcn->plotOn(swFrame);
+        swFrame->SetXTitle("m_{#gamma#gamma} (GeV/c^{2})");
+        swFrame->Draw();
+        double chi2 = swFrame->chiSquare(nFitPar);
+        double nBins;
+        if (wideRange) nBins=80;
+        else nBins=60;
+        double prob = TMath::Prob(chi2*(nBins-nFitPar),(nBins-nFitPar));
+        TPaveText *text = new TPaveText(0.7,0.6,0.85,0.89,"NDC");
+        text->SetFillColor(0);
+        text->SetLineColor(0);
+        text->AddText(Form("#chi^{2} = %1.2f",chi2));
+        text->AddText(Form("prob(#chi^{2}) = %1.2f",prob));
+        for (int par=0; par<nGenPar; par++) text->AddText(Form("p%d = %1.2f",par,genPars[par][cat]->getVal()));
+        text->SetTextAlign(13);
+        text->SetTextSize(0.04);
+        text->Draw("same");
+        c2->Print(Form("plots/data/fitTodat_%s_sw%s_m%d_c%d.png",fitName.c_str(),winName[win].c_str(),mMC,cat));
+        mIt++;
+        //delete text;
+        //delete c2;
+      }
+    }
+
   // ----- fit to data in each category ----- 
-    
-    data[cat] = (RooDataSet*)dataWS->data(Form("data_mass_cat%d",cat));
     RooFitResult *datFit;
     if (verbose) datFit = genFcn[cat]->fitTo(*data[cat],Save());
     else datFit = genFcn[cat]->fitTo(*data[cat],Save(),PrintLevel(-1),Warnings(false),PrintEvalErrors(-1));
@@ -312,11 +369,26 @@ int main(int argc, char* argv[]){
   // ----- draw fit to data ---------------
     TCanvas *c = new TCanvas();
     RooPlot *tFrame = mass->frame(Title(Form("%s fit to data cat%d",genName.c_str(),cat)));
-    data[cat]->plotOn(tFrame,DataError(RooDataSet::SumW2));
+    data[cat]->plotOn(tFrame,DataError(RooDataSet::SumW2),Binning("chi2binning"));
     genFcn[cat]->plotOn(tFrame);
+    tFrame->SetXTitle("m_{#gamma#gamma} (GeV/c^{2})");
     tFrame->Draw();
+    double chi2 = tFrame->chiSquare(nGenPar);
+    double nBins;
+    if (wideRange) nBins=80;
+    else nBins=60;
+    double prob = TMath::Prob(chi2*(nBins-nGenPar),(nBins-nGenPar));
+    TPaveText *text = new TPaveText(0.7,0.6,0.85,0.89,"NDC");
+    text->SetFillColor(0);
+    text->SetLineColor(0);
+    text->AddText(Form("#chi^{2} = %1.2f",chi2));
+    text->AddText(Form("prob(#chi^{2}) = %1.2f",prob));
+    for (int par=0; par<nGenPar; par++) text->AddText(Form("p%d = %1.2f",par,genPars[par][cat]->getVal()));
+    text->SetTextAlign(13);
+    text->SetTextSize(0.04);
+    text->Draw("same");
     c->Print(Form("plots/data/fitTodat_%s_cat%d.png",genName.c_str(),cat),"png");
-    delete c;
+    //delete c;
   
   // ---- Get mass distributions  and entries ------
     RooRealVar intRange(*mass);
@@ -382,8 +454,9 @@ int main(int argc, char* argv[]){
     mIt=0;
     for (int mMC=110; mMC<=150; mMC+=5){
       if (mMC==145) continue;
-      for (int win=0; win<nWinds; win++){
-        if (win==0) mass->setRange("SW",100,180);
+      for (int win=1; win<nWinds; win++){
+        if (win==0 && wideRange) mass->setRange("SW",100,180);
+        else if (win==0 && !wideRange) mass->setRange("SW",100,160);
         else if (win>0) mass->setRange("SW",mMC-10,mMC+10);
         RooSimultaneous simPdf(Form("simPdf%d_toy%d",mMC,itToy),Form("simPdf%d_toy%d",mMC,itToy),category);
         RooAddPdf *SandB[nCats];
@@ -395,19 +468,24 @@ int main(int argc, char* argv[]){
         // ---- reset starting vals ----
         mu->setVal(0.);
         for (int cat=0; cat<nCats; cat++){
-          if (win==0) bkgYield[mIt][cat]->setVal(5000.);
-          else bkgYield[mIt][cat]->setVal(1000.);
-          for (int p=0; p<nFitPar; p++){
-            if (fitType=="pol") fitPars[p][cat]->setVal(0.);
-            if (fitType=="exp") {
-              if (p%2==0) fitPars[p][cat]->setVal(-0.1);
-              else fitPars[p][cat]->setVal(0.5);
+          if (win==0) {
+            bkgYield[mIt][cat]->setVal(5000.);
+            for (int p=0; p<nFitPar; p++){
+              if (fitType=="pol") fitPars[p][cat]->setVal(0.);
+              if (fitType=="exp") {
+                if (p%2==0) fitPars[p][cat]->setVal(-0.1);
+                else fitPars[p][cat]->setVal(0.5);
+              }
+              if (fitType=="pow") {
+                if (p%2==0) fitPars[p][cat]->setVal(-1.);
+                else fitPars[p][cat]->setVal(0.5);
+              }
+              if (fitType=="lau") fitPars[p][cat]->setVal(0.5);
             }
-            if (fitType=="pow") {
-              if (p%2==0) fitPars[p][cat]->setVal(-1.);
-              else fitPars[p][cat]->setVal(0.5);
-            }
-            if (fitType=="lau") fitPars[p][cat]->setVal(0.5);
+          }
+          else {
+            bkgYield[mIt][cat]->setVal(1000.);
+            for (int p=0; p<nFitPar; p++) fitPars[p][cat]->setVal(swStartPar[mIt][cat][p]);
           }
         }
         // ---- fit and save output -----
@@ -436,7 +514,8 @@ int main(int argc, char* argv[]){
             leg->SetLineColor(0);
             leg->SetFillColor(0);
             RooPlot *mFrame = mass->frame(Title(Form("Gen: %s. Fit: %s. Mass %d win %s cat %d toy %d",genName.c_str(),fitName.c_str(),mMC,winName[win].c_str(),cat,itToy)));
-            mass->setBins(160,"coarse");
+            if (wideRange) mass->setBins(160,"coarse");
+            else mass->setBins(120,"coarse");
             genDat[cat]->plotOn(mFrame,DataError(RooDataSet::SumW2),Binning("coarse"));
             if (plotGen) genFcn[cat]->plotOn(mFrame,LineColor(kMagenta));
             //fitFcn[cat]->plotOn(mFrame,LineColor(kRed),LineStyle(kDashed));
@@ -465,10 +544,13 @@ int main(int argc, char* argv[]){
             leg->Draw("same");
             text->Draw("same");
             c1->Print(Form("plots/toys/fitTogen_g%s_f%s_m%d_w%s_cat%d_toy%d.png",genName.c_str(),fitName.c_str(),mMC,winName[win].c_str(),cat,itToy),"png");
-            delete c1;
-            delete h;
-            delete h1;
-            delete h2;
+            
+            //delete c1;
+            //delete h;
+            //delete h1;
+            //delete h2;
+            //delete text;
+            //delete leg;
           }
         // --- set starting to vals to that of gen
           //for (int par=0; par<nFitPar; par++) fitPars[par][cat]->setVal(startPar[par][cat]);
@@ -498,15 +580,17 @@ int main(int argc, char* argv[]){
           canv->Clear();
         }
       }
+      //delete canv;
     }
     mIt++;
   }
 
-  ofstream complete(Form("NewResults/g%s_f%s_j%d.txt",genName.c_str(),fitName.c_str(),jobNumb));
+  ofstream complete(Form("SWResults/g%s_f%s_j%d.txt",genName.c_str(),fitName.c_str(),jobNumb));
   complete << "Job: " << jobNumb << "/" << nJobs << " gen " << genName << " fit " << fitName << " completed successfully" << endl;
   complete.close();
-  inFile->Close();
+  cout << "Text file written " << endl;
   outFile->Close();
+  inFile->Close();
 
   return 0;
 }
